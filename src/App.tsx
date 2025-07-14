@@ -1,49 +1,94 @@
 import React, { useState } from 'react';
 import DownloadForm from './components/DownloadForm';
+import DownloadList from './components/DownloadList';
 import Header from './components/Header';
 
+interface DownloadStatus {
+  status: 'downloading' | 'completed' | 'error';
+  progress: number;
+  message: string;
+  started_at?: string;
+  completed_at?: string;
+  files?: string[];
+  errors?: string[];
+  url?: string;
+  domain?: string;
+}
+
+interface Downloads {
+  [key: string]: DownloadStatus;
+}
+
 const App: React.FC = () => {
+  const [downloads, setDownloads] = useState<Downloads>({});
   const [isLoading, setIsLoading] = useState(false);
   const API_BASE_URL = 'http://localhost:5001';
 
   const handleStartDownload = async (url: string) => {
     setIsLoading(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/download-in-memory`, {
+      const response = await fetch(`${API_BASE_URL}/api/download`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ url }),
       });
-      if (!response.ok) {
-        const data = await response.json();
-        alert(data.error || 'Failed to download');
-        setIsLoading(false);
-        return;
+      const data = await response.json();
+      if (response.ok) {
+        pollDownloadStatus(data.download_id, url);
+      } else {
+        alert(data.error || 'Failed to start download');
       }
-      // Get filename from Content-Disposition header
-      const disposition = response.headers.get('Content-Disposition');
-      let filename = 'website-scraped-content.zip';
-      if (disposition) {
-        const match = disposition.match(/filename="?([^";]+)"?/);
-        if (match) filename = match[1];
-      }
-      // Download the blob
-      const blob = await response.blob();
-      const urlBlob = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = urlBlob;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(urlBlob);
     } catch (error) {
-      alert('Failed to download. Please try again.');
+      alert('Failed to start download. Please try again.');
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const pollDownloadStatus = (downloadId: string, url: string) => {
+    const domain = (() => {
+      try {
+        return new URL(url).hostname;
+      } catch {
+        return url;
+      }
+    })();
+    setDownloads(prev => ({
+      ...prev,
+      [downloadId]: {
+        status: 'downloading',
+        progress: 0,
+        message: 'Starting download...',
+        url,
+        domain,
+      }
+    }));
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/status/${downloadId}`);
+        const status = await response.json();
+        setDownloads(prev => ({
+          ...prev,
+          [downloadId]: {
+            ...prev[downloadId],
+            ...status,
+            domain: prev[downloadId]?.domain || (status.url ? new URL(status.url).hostname : undefined),
+            url: prev[downloadId]?.url || status.url,
+          }
+        }));
+        if (status.status === 'completed' || status.status === 'error') {
+          clearInterval(interval);
+        }
+      } catch (error) {
+        clearInterval(interval);
+      }
+    }, 1000);
+  };
+
+  const handleViewDownload = (downloadId: string) => {
+    window.open(`${API_BASE_URL}/api/files/${downloadId}`, '_blank');
   };
 
   return (
@@ -54,6 +99,10 @@ const App: React.FC = () => {
           <DownloadForm 
             onStartDownload={handleStartDownload}
             isLoading={isLoading}
+          />
+          <DownloadList 
+            downloads={downloads}
+            onViewDownload={handleViewDownload}
           />
         </div>
       </main>

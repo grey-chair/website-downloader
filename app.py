@@ -23,6 +23,7 @@ import json
 import zipfile
 import tempfile
 import io
+import glob
 
 app = Flask(__name__)
 CORS(app)
@@ -57,19 +58,25 @@ def check_wget_installed():
         return False, "wget is not installed. Please install wget to use this tool."
     return True, None
 
+def get_main_website_folder(output_dir):
+    # Find the first directory inside output_dir (should be the website folder)
+    for entry in os.listdir(output_dir):
+        full_path = os.path.join(output_dir, entry)
+        if os.path.isdir(full_path):
+            return full_path
+    return output_dir  # fallback
+
 def download_images_with_playwright(url, output_dir):
-    """Download all images from the given URL using Playwright into output_dirimages"""
-    images_dir = os.path.join(output_dir, "images")
+    """Download all images from the given URL using Playwright into the website folder's images subfolder"""
+    website_folder = get_main_website_folder(output_dir)
+    images_dir = os.path.join(website_folder, "images")
     os.makedirs(images_dir, exist_ok=True)
-    
     image_data = []
-    
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
         page.goto(url)
         images = page.query_selector_all("img")
-        
         for img in images:
             src = img.get_attribute("src")
             if src:
@@ -78,39 +85,23 @@ def download_images_with_playwright(url, output_dir):
                     filename = os.path.basename(src)
                     filepath = os.path.join(images_dir, filename)
                     urllib.request.urlretrieve(full_url, filepath)
-                    
-                    # Get image metadata
                     alt = img.get_attribute("alt") or ""
                     class_name = img.get_attribute("class") or ""
                     width = img.get_attribute("width")
                     height = img.get_attribute("height")
-                    
-                    # Convert width/height to integers if they exist
                     width = int(width) if width and width.isdigit() else None
                     height = int(height) if height and height.isdigit() else None
-                    
-                    # Dynamic tag assignment
-                    tag = "gallery"  # default fallback
-                    
-                    # Tag as "logo" if filename or class_name includes "logo"
+                    tag = "gallery"
                     if "logo" in filename.lower() or "logo" in class_name.lower():
                         tag = "logo"
-                    # Tag as "hero" if width >= 1000 and height >= 300
                     elif width and height and width >= 1000 and height >= 300:
                         tag = "hero"
-                    # Tag as "banner" if alt or class_name contains "header", "banner", or "hero"
-                    elif any(keyword in alt.lower() or keyword in class_name.lower() 
-                           for keyword in ["header", "banner", "hero"]):
+                    elif any(keyword in alt.lower() or keyword in class_name.lower() for keyword in ["header", "banner", "hero"]):
                         tag = "banner"
-                    # Tag as "icon" if width < 100 && height < 100
                     elif width and height and width < 100 and height < 100:
                         tag = "icon"
-                    # Tag as "product" if alt or filename includes "product", "cover", "item", or "feature"
-                    elif any(keyword in alt.lower() or keyword in filename.lower() 
-                           for keyword in ["product", "cover", "item", "feature"]):
+                    elif any(keyword in alt.lower() or keyword in filename.lower() for keyword in ["product", "cover", "item", "feature"]):
                         tag = "product"
-                    
-                    # Add image data entry
                     image_data.append({
                         "filename": filename,
                         "alt": alt,
@@ -119,17 +110,14 @@ def download_images_with_playwright(url, output_dir):
                         "src": full_url,
                         "tag": tag
                     })
-                    
                 except Exception as e:
                     print(f"Failed to download {full_url}: {e}")
-        
         browser.close()
-    
-    # Save image metadata to a JSON file
-    image_metadata_path = os.path.join(output_dir, "image_metadata.json")
+    # Save image metadata to a JSON file in the website folder
+    import json
+    image_metadata_path = os.path.join(website_folder, "image_metadata.json")
     with open(image_metadata_path, "w", encoding="utf-8") as f:
         json.dump(image_data, f, indent=2, ensure_ascii=False)
-    
     return image_data
 
 def download_site_worker(url, download_id, output_dir):
@@ -186,34 +174,19 @@ def download_site_worker(url, download_id, output_dir):
                     'message': 'Download complete. Generating site map...'
                 })
             
-            # Generate site map
-            site_map_path = os.path.join(output_dir, "site_map.md")
-            success, error_msg = generate_site_map(output_dir, site_map_path)
-            
             # Download images with Playwright
             try:
                 download_images_with_playwright(url, output_dir)
             except Exception as e:
                 print(f"Image scraping failed: {e}")
 
-            if success:
-                # Update status to completed
-                with download_lock:
-                    download_status[download_id].update({
-                        'status': 'completed',
-                        'progress': 100,
-                        'message': 'Site mirror complete!',
-                        'site_map': site_map_path
-                    })
-            else:
-                # Update status to completed with warning
-                with download_lock:
-                    download_status[download_id].update({
-                        'status': 'completed',
-                        'progress': 100,
-                        'message': 'Download complete but site map generation failed',
-                        'warning': error_msg
-                    })
+            # Update status to completed
+            with download_lock:
+                download_status[download_id].update({
+                    'status': 'completed',
+                    'progress': 100,
+                    'message': 'Site mirror complete!'
+                })
         else:
             error_msg = f"wget failed with return code {result.returncode}"
             if result.stderr:
@@ -242,33 +215,8 @@ def download_site_worker(url, download_id, output_dir):
                 'message': f'Download failed: {str(e)}'
             })
 
-def generate_site_map(output_dir, site_map_path):
-    """Generate markdown site map"""
-    try:
-        with open(site_map_path, "w", encoding="utf-8") as f:
-            f.write(f"# Site Map\n\n")
-            f.write(f"Generated on: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-            
-            for dirpath, dirnames, filenames in os.walk(output_dir):
-                # Calculate depth for indentation
-                depth = dirpath[len(output_dir):].count(os.sep)
-                indent = "  " * depth
-                
-                # Write directory name
-                if depth > 0:
-                    dir_name = os.path.basename(dirpath)
-                    f.write(f"{indent}- **{dir_name}/**\n")
-                
-                # Write files
-                subindent = "  " * (depth + 1)
-                for filename in sorted(filenames):
-                    if filename != "site_map.md":
-                        f.write(f"{subindent}- `{filename}`\n")
-        
-        return True, None
-        
-    except Exception as e:
-        return False, f"Failed to generate site map: {str(e)}"
+# Remove all generate_site_map calls and the /api/sitemap endpoint
+# In download_site_worker and download_in_memory, do not call generate_site_map
 
 @app.route('/api/download', methods=['POST'])
 def start_download():
@@ -359,29 +307,12 @@ def serve_files(download_id, filename='index.html'):
     if not output_dir or not os.path.exists(output_dir):
         return jsonify({'error': 'Files not found'}), 404
     
-    return send_from_directory(output_dir, filename)
+    website_folder = get_main_website_folder(output_dir)
+    file_path = os.path.join(website_folder, filename)
+    if not os.path.exists(file_path):
+        return jsonify({'error': f'File {filename} not found'}), 404
 
-@app.route('/api/sitemap/<download_id>')
-def get_sitemap(download_id):
-    """Get site map for a download"""
-    with download_lock:
-        if download_id not in download_status:
-            return jsonify({'error': 'Download not found'}), 404
-        
-        status = download_status[download_id]
-        if status['status'] != 'completed':
-            return jsonify({'error': 'Download not completed'}), 400
-    
-    site_map_path = status.get('site_map')
-    if not site_map_path or not os.path.exists(site_map_path):
-        return jsonify({'error': 'Site map not found'}), 404
-    
-    try:
-        with open(site_map_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        return jsonify({'content': content})
-    except Exception as e:
-        return jsonify({'error': f'Failed to read site map: {str(e)}'}), 500
+    return send_from_directory(website_folder, filename)
 
 @app.route('/api/download-zip/<download_id>')
 def download_zip(download_id):
@@ -608,8 +539,8 @@ def download_in_memory():
         except Exception as e:
             print(f"Image scraping failed: {e}")
         # Generate site map
-        site_map_path = os.path.join(temp_dir, "site_map.md")
-        generate_site_map(temp_dir, site_map_path)
+        # site_map_path = os.path.join(temp_dir, "site_map.md")
+        # generate_site_map(temp_dir, site_map_path)
         # Zip the temp_dir in memory
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -627,6 +558,44 @@ def download_in_memory():
             download_name=zip_filename,
             mimetype='application/zip'
         )
+
+def fix_image_references(website_folder):
+    html_files = glob.glob(os.path.join(website_folder, "*.htm*"))
+    patterns = [
+        # (attribute, folder)
+        ('src="/images/', 'src="images/'),
+        ("src='/images/", "src='images/"),
+        ('href="/images/', 'href="images/'),
+        ("href='/images/", "href='images/"),
+        ('url("/images/', 'url("images/'),
+        ("url('/images/", "url('images/"),
+        ('src="/styles/', 'src="styles/'),
+        ("src='/styles/", "src='styles/"),
+        ('href="/styles/', 'href="styles/'),
+        ("href='/styles/", "href='styles/"),
+        ('url("/styles/', 'url("styles/'),
+        ("url('/styles/", "url('styles/"),
+        ('src="/themes/', 'src="themes/'),
+        ("src='/themes/", "src='themes/"),
+        ('href="/themes/', 'href="themes/'),
+        ("href='/themes/", "href='themes/"),
+        ('url("/themes/', 'url("themes/'),
+        ("url('/themes/", "url('themes/"),
+        # Generic: any reference to /assets/
+        ('src="/assets/', 'src="assets/'),
+        ("src='/assets/", "src='assets/"),
+        ('href="/assets/', 'href="assets/'),
+        ("href='/assets/", "href='assets/"),
+        ('url("/assets/', 'url("assets/'),
+        ("url('/assets/", "url('assets/"),
+    ]
+    for html_file in html_files:
+        with open(html_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        for old, new in patterns:
+            content = content.replace(old, new)
+        with open(html_file, "w", encoding="utf-8") as f:
+            f.write(content)
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001) 
