@@ -99,6 +99,26 @@ GET /api/files/{download_id}/{filename}
 GET /api/sitemap/{download_id}
 ```
 
+### Get Image Metadata
+```bash
+GET /api/images/{download_id}
+```
+
+### Download Complete Content (ZIP)
+```bash
+GET /api/download-zip/{download_id}
+```
+
+### Download Images Only (ZIP)
+```bash
+GET /api/download-images/{download_id}
+```
+
+### Download HTML Content Only (ZIP)
+```bash
+GET /api/download-html/{download_id}
+```
+
 ### Health Check
 ```bash
 GET /api/health
@@ -145,11 +165,18 @@ curl -X POST http://localhost:5001/api/download \
 curl http://localhost:5001/api/status/{download_id}
 ```
 
-### Serve downloaded content
+### Download scraped content to your local machine
 ```bash
-# Start a local server for the downloaded content
-cd downloads/{download_id}/{domain}
-python3 -m http.server 8080
+# Download complete scraped content (HTML + Images + Metadata)
+curl -O -J http://localhost:5001/api/download-zip/{download_id}
+
+# Download images only
+curl -O -J http://localhost:5001/api/download-images/{download_id}
+
+# Download HTML content only
+curl -O -J http://localhost:5001/api/download-html/{download_id}
+
+# Or simply visit these URLs in your browser to download directly
 ```
 
 ## 🔧 Configuration

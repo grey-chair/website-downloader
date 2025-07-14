@@ -4,7 +4,7 @@ Site Mirror Tool - Flask API for frontend integration
 Downloads websites using wget and generates a markdown site map
 """
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, send_file
 from flask_cors import CORS
 import os
 import sys
@@ -20,6 +20,9 @@ from playwright.sync_api import sync_playwright
 from urllib.parse import urljoin
 import urllib.request
 import json
+import zipfile
+import tempfile
+import io
 
 app = Flask(__name__)
 CORS(app)
@@ -380,6 +383,177 @@ def get_sitemap(download_id):
     except Exception as e:
         return jsonify({'error': f'Failed to read site map: {str(e)}'}), 500
 
+@app.route('/api/download-zip/<download_id>')
+def download_zip(download_id):
+    """Create and serve a downloadable zip file of the scraped content"""
+    with download_lock:
+        if download_id not in download_status:
+            return jsonify({'error': 'Download not found'}), 404
+        
+        status = download_status[download_id]
+        if status['status'] != 'completed':
+            return jsonify({'error': 'Download not completed'}), 400
+    
+    output_dir = status.get('output_dir')
+    if not output_dir or not os.path.exists(output_dir):
+        return jsonify({'error': 'Files not found'}), 404
+    
+    # Create a temporary zip file
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    temp_zip.close()
+    
+    try:
+        with zipfile.ZipFile(temp_zip.name, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Add all files from the output directory
+            for root, dirs, files in os.walk(output_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    # Calculate relative path for zip
+                    arcname = os.path.relpath(file_path, output_dir)
+                    zipf.write(file_path, arcname)
+        
+        # Get the domain name for the filename
+        domain = urlparse(status['url']).netloc
+        zip_filename = f"{domain}-scraped-content.zip"
+        
+        return send_file(
+            temp_zip.name,
+            as_attachment=True,
+            download_name=zip_filename,
+            mimetype='application/zip'
+        )
+    
+    except Exception as e:
+        # Clean up temp file on error
+        if os.path.exists(temp_zip.name):
+            os.unlink(temp_zip.name)
+        return jsonify({'error': f'Failed to create zip: {str(e)}'}), 500
+
+@app.route('/api/download-images/<download_id>')
+def download_images_zip(download_id):
+    """Create and serve a downloadable zip file of just the images"""
+    with download_lock:
+        if download_id not in download_status:
+            return jsonify({'error': 'Download not found'}), 404
+        
+        status = download_status[download_id]
+        if status['status'] != 'completed':
+            return jsonify({'error': 'Download not completed'}), 400
+    
+    output_dir = status.get('output_dir')
+    if not output_dir or not os.path.exists(output_dir):
+        return jsonify({'error': 'Files not found'}), 404
+    
+    images_dir = os.path.join(output_dir, "images")
+    if not os.path.exists(images_dir):
+        return jsonify({'error': 'No images found'}), 404
+    
+    # Create a temporary zip file
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    temp_zip.close()
+    
+    try:
+        with zipfile.ZipFile(temp_zip.name, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Add all image files
+            for file in os.listdir(images_dir):
+                file_path = os.path.join(images_dir, file)
+                if os.path.isfile(file_path):
+                    zipf.write(file_path, f"images/{file}")
+            
+            # Add image metadata if it exists
+            metadata_path = os.path.join(output_dir, "image_metadata.json")
+            if os.path.exists(metadata_path):
+                zipf.write(metadata_path, "image_metadata.json")
+        
+        # Get the domain name for the filename
+        domain = urlparse(status['url']).netloc
+        zip_filename = f"{domain}-images.zip"
+        
+        return send_file(
+            temp_zip.name,
+            as_attachment=True,
+            download_name=zip_filename,
+            mimetype='application/zip'
+        )
+    
+    except Exception as e:
+        # Clean up temp file on error
+        if os.path.exists(temp_zip.name):
+            os.unlink(temp_zip.name)
+        return jsonify({'error': f'Failed to create images zip: {str(e)}'}), 500
+
+@app.route('/api/download-html/<download_id>')
+def download_html_zip(download_id):
+    """Create and serve a downloadable zip file of just the HTML content"""
+    with download_lock:
+        if download_id not in download_status:
+            return jsonify({'error': 'Download not found'}), 404
+        
+        status = download_status[download_id]
+        if status['status'] != 'completed':
+            return jsonify({'error': 'Download not completed'}), 400
+    
+    output_dir = status.get('output_dir')
+    if not output_dir or not os.path.exists(output_dir):
+        return jsonify({'error': 'Files not found'}), 404
+    
+    # Create a temporary zip file
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    temp_zip.close()
+    
+    try:
+        with zipfile.ZipFile(temp_zip.name, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            # Add HTML files and site map, exclude images
+            for root, dirs, files in os.walk(output_dir):
+                # Skip images directory
+                if 'images' in dirs:
+                    dirs.remove('images')
+                
+                for file in files:
+                    if file.endswith(('.html', '.htm', '.md', '.json')):
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, output_dir)
+                        zipf.write(file_path, arcname)
+        
+        # Get the domain name for the filename
+        domain = urlparse(status['url']).netloc
+        zip_filename = f"{domain}-html-content.zip"
+        
+        return send_file(
+            temp_zip.name,
+            as_attachment=True,
+            download_name=zip_filename,
+            mimetype='application/zip'
+        )
+    
+    except Exception as e:
+        # Clean up temp file on error
+        if os.path.exists(temp_zip.name):
+            os.unlink(temp_zip.name)
+        return jsonify({'error': f'Failed to create HTML zip: {str(e)}'}), 500
+
+@app.route('/api/images/<download_id>')
+def get_image_metadata(download_id):
+    """Get image metadata for a download"""
+    with download_lock:
+        if download_id not in download_status:
+            return jsonify({'error': 'Download not found'}), 404
+        
+        status = download_status[download_id]
+        if status['status'] != 'completed':
+            return jsonify({'error': 'Download not completed'}), 400
+    
+    metadata_path = os.path.join(status.get('output_dir'), "image_metadata.json")
+    if not os.path.exists(metadata_path):
+        return jsonify({'error': 'Image metadata not found'}), 404
+    
+    try:
+        with open(metadata_path, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+        return jsonify(metadata)
+    except Exception as e:
+        return jsonify({'error': f'Failed to read image metadata: {str(e)}'}), 500
+
 @app.route('/api/health')
 def health_check():
     """Health check endpoint"""
@@ -389,6 +563,70 @@ def health_check():
         'wget_installed': wget_ok,
         'wget_error': error_msg if not wget_ok else None
     })
+
+@app.route('/api/download-in-memory', methods=['POST'])
+def download_in_memory():
+    """Scrape a website, zip the results in memory, and stream to the user (no persistent storage)"""
+    data = request.get_json()
+    if not data or 'url' not in data:
+        return jsonify({'error': 'URL is required', 'usage': 'Send JSON with {"url": "https://example.com"}'}), 400
+    url = data['url']
+    # Validate URL
+    is_valid, error_msg = validate_url(url)
+    if not is_valid:
+        return jsonify({'error': 'Invalid URL', 'message': error_msg}), 400
+    # Check if wget is installed
+    wget_ok, error_msg = check_wget_installed()
+    if not wget_ok:
+        return jsonify({'error': 'System requirement not met', 'message': error_msg}), 500
+    # Use a temporary directory for all scraping
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Run wget
+        wget_cmd = [
+            'wget',
+            '-r',
+            '-p',
+            '-k',
+            '-e', 'robots=off',
+            '--html-extension',
+            '--convert-links',
+            '--restrict-file-names=windows',
+            '--no-parent',
+            '--directory-prefix', temp_dir,
+            '-U', 'Mozilla',
+            url
+        ]
+        result = subprocess.run(wget_cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            error_msg = f"wget failed with return code {result.returncode}"
+            if result.stderr:
+                error_msg += f"\nError: {result.stderr}"
+            return jsonify({'error': error_msg}), 500
+        # Playwright image download
+        try:
+            download_images_with_playwright(url, temp_dir)
+        except Exception as e:
+            print(f"Image scraping failed: {e}")
+        # Generate site map
+        site_map_path = os.path.join(temp_dir, "site_map.md")
+        generate_site_map(temp_dir, site_map_path)
+        # Zip the temp_dir in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(temp_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, temp_dir)
+                    zipf.write(file_path, arcname)
+        zip_buffer.seek(0)
+        domain = urlparse(url).netloc
+        zip_filename = f"{domain}-scraped-content.zip"
+        return send_file(
+            zip_buffer,
+            as_attachment=True,
+            download_name=zip_filename,
+            mimetype='application/zip'
+        )
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001) 
